@@ -23,6 +23,8 @@ LangChain4j or Spring AI (for LLM + RAG)
 
 OpenAI GPT or Ollama (local LLM)
 
+### Config
+export your OPEN_AI_API_KEY and MYSQL_PASSWORD into environment variables
 
 ### Maven Parent overrides
 
