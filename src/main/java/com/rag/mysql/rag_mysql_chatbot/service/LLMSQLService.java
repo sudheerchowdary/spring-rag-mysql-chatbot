@@ -19,7 +19,7 @@ public class LLMSQLService {
         this.jdbcTemplate = jdbcTemplate;
         this.llm = OpenAiChatModel.builder()
                 .apiKey(apiKey)
-                .modelName("gpt-4o-mini")
+                .modelName("gpt-4o")
                 .temperature(0.2)
                 .build();
     }
