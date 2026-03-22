@@ -13,8 +13,22 @@ public class ChatController {
 
     @Autowired
     private LLMSQLService llmSqlService;
-    @PostMapping(produces = "text/plain; charset=UTF-8")
+
+    @PostMapping(
+        consumes = {"text/plain", "application/json"},
+        produces = "text/plain; charset=UTF-8"
+    )
     public String sendMessage(@RequestBody String request) {
-        return llmSqlService.queryDatabase(request);
+        // Handle both plain text and JSON input
+        String question = request;
+        if (request.startsWith("{") && request.contains("message")) {
+            // JSON format: extract message field
+            try {
+                question = request.replaceAll(".*\"message\"\\s*:\\s*\"([^\"]+)\".*", "$1");
+            } catch (Exception e) {
+                question = request;
+            }
+        }
+        return llmSqlService.queryDatabase(question);
     }
 }

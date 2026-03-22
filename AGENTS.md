@@ -30,11 +30,14 @@ POST /api/chat (plain text)
 ```
 
 ### LLM Integration Details
-- **Library**: LangChain4j 0.32.0 (`dev.langchain4j.model.openai.OpenAiChatModel`)
-- **Model**: GPT-4o with temperature=0.2 (low randomness for deterministic SQL)
+- **Library**: LangChain4j 0.32.0 (OpenAI primary + Ollama fallback)
+- **Primary Model**: GPT-4o with temperature=0.2 (low randomness for deterministic SQL)
+- **Fallback Model**: Ollama (`neural-chat` model) at `http://localhost:11434`
+- **Quota Detection**: Automatically detects OpenAI quota errors and switches to Ollama
 - **Prompt Structure**: Static schema info + user question (no in-context examples yet)
 - **Output Cleaning**: Removes markdown code blocks before SQL execution
-- **Error Handling**: Catches exceptions, returns error message + attempted SQL
+- **Error Handling**: Quota-aware fallback; graceful degradation with actionable error messages instead of crashes
+- **Ollama Availability Check**: Verifies Ollama is running before attempting fallback (prevents hanging)
 
 ### Database Schema
 **Database**: `rag-data-schema` (MySQL)
@@ -90,11 +93,18 @@ export OPEN_AI_API_KEY=sk-...
 
 ## Critical Integration Points
 
-### OpenAI Integration
-- **Builder pattern**: `OpenAiChatModel.builder().apiKey().modelName().temperature().build()`
-- **Instantiation**: Happens in LLMSQLService constructor (service-scoped)
-- **API Key**: Injected via `@Value("${openai.api-key}")` from environment
-- **Model name**: Hardcoded to "gpt-4o"; upgrade model name in LLMSQLService line 20
+### LLM Initialization
+- **Dual LLM Architecture**: Both OpenAI and Ollama are instantiated in LLMSQLService constructor
+- **OpenAI Builder pattern**: `OpenAiChatModel.builder().apiKey().modelName("gpt-4o").temperature(0.2).build()`
+- **Ollama Builder pattern**: `OllamaChatModel.builder().baseUrl("http://localhost:11434").modelName("neural-chat").temperature(0.2).build()`
+- **API Key Injection**: OpenAI key via `@Value("${openai.api-key}")` from environment
+- **Quota-Aware Fallback Logic** (in `generateSQL()` method):
+  1. Try OpenAI first (unless fallback flag is active)
+  2. On `Exception`, check if error message contains `insufficient_quota`, `You exceeded your current quota`, or `quota_exceeded`
+  3. If quota error: Check Ollama availability via HTTP HEAD request to `localhost:11434/api/tags` (2-second timeout)
+  4. If Ollama available: Set `useOllamaFallback=true` flag and generate SQL using Ollama
+  5. If Ollama unavailable: Return graceful error with installation/setup instructions
+- **Upgrade Model**: Change modelName in OpenAiChatModel.builder() or OllamaChatModel.builder()
 
 ### MySQL Connection
 - **JdbcTemplate**: Injected into LLMSQLService constructor (auto-configured by Spring)
@@ -109,32 +119,61 @@ export OPEN_AI_API_KEY=sk-...
 2. Update `rag-mysql-chatbot.sql` with CREATE TABLE + INSERT statements
 3. Test with `mvn spring-boot:run`
 
-### Switching to Different LLM
-Replace `OpenAiChatModel` in LLMSQLService with:
-- `OllamaChatModel` (LangChain4j support, local models)
-- `BedrockChatModel` (AWS)
-- Check LangChain4j 0.32.0 docs for available model integrations
+### Switching LLM Models or Architecture
+**Changing OpenAI Model**:
+- Update `modelName("gpt-4o")` to desired model in LLMSQLService constructor (line 28)
+- Examples: `gpt-4-turbo`, `gpt-3.5-turbo`
 
-### Debugging LLM Output
-- **Generated SQL**: Printed to stdout via `System.out.println("Generated SQL: " + sql)` (line 47)
-- **Check formatting**: Test if LLM returns markdown-wrapped SQL and adjust .replaceAll() patterns if needed
-- **Test question**: Use simple questions first ("Show all products") before complex JOINs
+**Changing Ollama Fallback Model**:
+- Update `modelName("neural-chat")` in LLMSQLService constructor (line 35)
+- Examples: `llama2`, `mistral`, `neural-chat` (default)
+- Note: Ollama model must be pre-pulled via `ollama pull <modelname>`
+
+**Removing Ollama Fallback** (use OpenAI only):
+- In `generateSQL()`, remove the quota detection block (lines 72-89)
+- Comment out Ollama initialization in constructor (lines 33-37)
+
+**Replacing Both LLMs**:
+- Replace `OpenAiChatModel` with alternative (e.g., `BedrockChatModel` for AWS, `AnthropicChatModel`)
+- Check LangChain4j 0.32.0 docs for available model integrations
+- Update pom.xml dependencies (e.g., `langchain4j-anthropic:0.32.0`)
+
+### Debugging LLM Output & Quota Fallback
+- **Generated SQL**: Printed to stdout via `System.out.println("Generated SQL: " + sql)` (line 114)
+- **Active LLM**: Console logs show `"Using OpenAI GPT-4o"` or `"Using Ollama (local LLM) as fallback"`
+- **Check formatting**: Test if LLM returns markdown-wrapped SQL and adjust `.replaceAll()` patterns if needed
+- **Test question**: Use simple questions first (`"Show all products"`) before complex JOINs
+
+**Quota Fallback Diagnostics**:
+- When quota exceeded: Console shows `"⚠️ OpenAI quota exceeded. Attempting fallback to Ollama..."`
+- If Ollama unavailable: Check Docker/local installation, or see error message in response for setup instructions
+- Monitor `useOllamaFallback` flag state—once activated, subsequent requests skip OpenAI and use Ollama directly
+- **To reset fallback**: Restart service or implement a `/reset-llm` endpoint to set `useOllamaFallback = false`
+
+**Ollama Health Checks**:
+- Verification request: `curl http://localhost:11434/api/tags` (should return JSON list of models)
+- Connection timeout: 2 seconds (configurable via `OkHttpClient` in `isOllamaAvailable()`)
+- Common issue: Port 11434 already in use—check with `lsof -i :11434`
 
 ### Frontend Integration
 - **Endpoint**: POST `/api/chat`
-- **Content-Type**: Text/plain (not JSON)
-- **Response**: Plain text formatted as "key: value\n\nkey: value\n..."
+- **Content-Type Support**: Accepts both `text/plain` and `application/json`
+  - **Plain text**: Send raw question directly as request body
+  - **JSON format**: `{"message": "your question"}` - controller extracts `message` field automatically
+- **Response**: Plain text formatted as `key: value\n\nkey: value\n...` (UTF-8 charset)
 - **HTML client**: `src/main/resources/static/index.html` (basic chat UI with fetch API)
 
 ## Dependency Management
 
 ### Key Libraries
-- `langchain4j:0.32.0` - LLM orchestration
-- `langchain4j-open-ai:0.32.0` - OpenAI integration
+- `langchain4j:0.32.0` - LLM orchestration core
+- `langchain4j-open-ai:0.32.0` - OpenAI integration (primary)
+- `langchain4j-ollama:0.32.0` - Ollama integration (quota fallback)
 - `spring-boot-starter-webmvc:4.0.0-SNAPSHOT` - Web framework
 - `spring-boot-starter-data-jpa:4.0.0-SNAPSHOT` - JPA (auto-configured but not actively used)
 - `mysql-connector-j:runtime` - JDBC driver
 - `spring-boot-devtools:runtime` - Hot reload
+- `okhttp3` - HTTP client for Ollama availability checks (transitive via LangChain4j)
 
 ### Maven Repositories
 - Spring Snapshots (Spring 4.0.0-SNAPSHOT)
