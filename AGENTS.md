@@ -65,12 +65,99 @@ mvn test
 ```bash
 export MYSQL_PASSWORD=your_mysql_root_password
 export OPEN_AI_API_KEY=sk-...
+export OLLAMA_BASE_URL=http://localhost:11434  # Optional, defaults to localhost:11434
+```
+
+**Docker-specific setup** (when Ollama runs in Docker):
+```bash
+# If running Spring Boot locally but Ollama in Docker
+export OLLAMA_BASE_URL=http://host.docker.internal:11434  # macOS/Windows Docker Desktop
+export OLLAMA_BASE_URL=http://172.17.0.1:11434           # Linux (bridge network)
+
+# If both Spring Boot and Ollama in Docker on same network
+export OLLAMA_BASE_URL=http://ollama:11434               # Use service name
 ```
 
 ### Local MySQL Setup
 1. Create schema: `mysql -u root -p < rag-mysql-chatbot.sql`
 2. Server runs on port 8080 (default Spring Boot)
 3. Test via `curl -X POST http://localhost:8080/api/chat -H "Content-Type: text/plain" -d "List all products"`
+
+### Docker Setup for Ollama & Spring Boot
+
+**Option 1: Ollama in Docker + Spring Boot Locally**
+```bash
+# Terminal 1: Start Ollama container
+docker run -d --name ollama -p 11434:11434 ollama/ollama
+
+# Terminal 2: Pull model
+docker exec ollama ollama pull neural-chat
+
+# Terminal 3: Run Spring Boot
+export OLLAMA_BASE_URL=http://host.docker.internal:11434  # macOS/Windows
+export OLLAMA_BASE_URL=http://172.17.0.1:11434            # Linux
+mvn spring-boot:run
+```
+
+**Option 2: Both in Docker (Docker Compose)**
+```bash
+# Create docker-compose.yml:
+version: '3.8'
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    volumes:
+      - ollama_data:/root/.ollama
+    command: serve
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./rag-mysql-chatbot.sql:/docker-entrypoint-initdb.d/init.sql
+
+  app:
+    build: .
+    container_name: spring-rag-chatbot
+    ports:
+      - "8080:8080"
+    environment:
+      MYSQL_PASSWORD: password
+      OPEN_AI_API_KEY: ${OPEN_AI_API_KEY}
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      - ollama
+      - mysql
+
+volumes:
+  ollama_data:
+
+# Run with:
+docker-compose up --build
+```
+
+**Option 3: Pull Ollama Model Automatically**
+```bash
+# Use init script that runs before app starts:
+docker run -d --name ollama ollama/ollama
+sleep 3
+docker exec ollama ollama pull neural-chat
+docker exec ollama ollama pull mistral  # or other models
+```
+
+**Common Docker Networking Issues**
+- **Cannot reach localhost:11434 from Spring Boot**: Use `host.docker.internal` (macOS/Windows) or service name in Docker network
+- **Docker on Linux**: Use bridge IP `172.17.0.1` or create custom network
+- **Check Ollama running**: `curl http://localhost:11434/api/tags` (from host) or `curl http://ollama:11434/api/tags` (from container)
 
 ## Project-Specific Patterns
 
