@@ -5,6 +5,8 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -15,6 +17,8 @@ import java.util.Map;
 
 @Service
 public class LLMSQLService {
+
+    private static final Logger logger = LoggerFactory.getLogger(LLMSQLService.class);
 
     private final JdbcTemplate jdbcTemplate;
     private final OpenAiChatModel openAiLlm;
@@ -71,11 +75,11 @@ public class LLMSQLService {
         if (!useOllamaFallback) {
             try {
                 sql = openAiLlm.generate(prompt);
-                System.out.println("Using OpenAI GPT-4o");
+                logger.info("Using OpenAI GPT-4o");
             } catch (Exception e) {
                 // Check if it's a quota error
                 if (isQuotaExceededError(e)) {
-                    System.out.println("⚠️  OpenAI quota exceeded. Attempting fallback to Ollama...");
+                    logger.warn("OpenAI quota exceeded. Attempting fallback to Ollama...");
                     
                     // Check if Ollama is actually available before trying
                     if (isOllamaAvailable()) {
@@ -83,7 +87,7 @@ public class LLMSQLService {
                         sql = generateWithOllama(prompt);
                     } else {
                         // Both OpenAI quota and Ollama unavailable
-                        System.err.println("❌ OpenAI quota exceeded AND Ollama is not running");
+                        logger.error("OpenAI quota exceeded AND Ollama is not running");
                         sql = returnGracefulFallbackResponse();
                     }
                 } else {
@@ -96,7 +100,7 @@ public class LLMSQLService {
                 sql = generateWithOllama(prompt);
             } else {
                 // Ollama became unavailable during operation
-                System.err.println("❌ Ollama became unavailable");
+                logger.error("Ollama became unavailable");
                 sql = returnGracefulFallbackResponse();
             }
         }
@@ -108,7 +112,7 @@ public class LLMSQLService {
                     .trim();
         }
         
-        System.out.println("Generated SQL: " + sql);
+        logger.debug("Generated SQL: {}", sql);
         return sql;
     }
 
@@ -130,10 +134,10 @@ public class LLMSQLService {
             Response response = client.newCall(request).execute();
             response.close();
             
-            System.out.println("✓ Ollama is available at localhost:11434");
+            logger.info("Ollama is available at localhost:11434");
             return true;
         } catch (Exception e) {
-            System.out.println("⚠️  Ollama is not available: " + e.getMessage());
+            logger.error("Ollama is not available: {}", e.getMessage());
             return false;
         }
     }
@@ -161,10 +165,10 @@ public class LLMSQLService {
      */
     private String generateWithOllama(String prompt) {
         try {
-            System.out.println("Using Ollama (local LLM) as fallback");
+            logger.info("Using Ollama (local LLM) as fallback");
             return ollamaLlm.generate(prompt);
         } catch (Exception e) {
-            System.err.println("❌ Ollama generation failed: " + e.getMessage());
+            logger.error("Ollama generation failed: {}", e.getMessage());
             
             // Return graceful fallback instead of crashing
             if (e.getMessage().contains("Connection refused") || 
