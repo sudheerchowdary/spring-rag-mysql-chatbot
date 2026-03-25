@@ -22,7 +22,8 @@ public class LLMSQLService {
     private boolean useOllamaFallback = false;
 
     public LLMSQLService(JdbcTemplate jdbcTemplate,
-                         @Value("${openai.api-key}") String apiKey) {
+                         @Value("${openai.api-key}") String apiKey,
+                         @Value("${ollama.base-url:http://localhost:11434}") String ollamaBaseUrl) {
         this.jdbcTemplate = jdbcTemplate;
         this.openAiLlm = OpenAiChatModel.builder()
                 .apiKey(apiKey)
@@ -30,9 +31,9 @@ public class LLMSQLService {
                 .temperature(0.2)
                 .build();
         
-        // Initialize Ollama fallback model
+        // Initialize Ollama fallback model with configurable base URL
         this.ollamaLlm = OllamaChatModel.builder()
-                .baseUrl("http://localhost:11434")  // ✅ Correct Ollama default port
+                .baseUrl(ollamaBaseUrl)
                 .modelName("neural-chat")  // or "neural-chat", "llama2", etc.
                 .temperature(0.2)
                 .build();

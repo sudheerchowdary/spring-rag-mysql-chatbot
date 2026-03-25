@@ -12,6 +12,8 @@ A **production-ready RAG (Retrieval-Augmented Generation) SQL chatbot** that con
 ✅ **Graceful Degradation**: Helpful messages instead of crashes  
 ✅ **Zero Setup for Fallback**: Ollama runs locally, no API key needed  
 ✅ **Production Ready**: Tested error handling and health checks  
+✅ **Docker Support**: Run Ollama in Docker with configurable URLs  
+✅ **Cross-Platform**: Works on macOS, Windows, and Linux  
 
 ---
 
@@ -29,22 +31,53 @@ mysql --version
 mysql -u root -p < rag-mysql-chatbot.sql
 ```
 
-### Setup & Run
+### Setup & Run Options
+
+#### Option 1: Local Ollama Installation
 ```bash
 # 1. Set environment variables
 export MYSQL_PASSWORD=your_password
 export OPEN_AI_API_KEY=sk-your-api-key
+export OLLAMA_BASE_URL=http://localhost:11434
 
-# 2. Optional: Setup Ollama fallback
-brew install ollama
-ollama serve  # Terminal 1
-ollama pull mistral  # Terminal 2
+# 2. Install and start Ollama
+brew install ollama  # macOS
+# OR download from https://ollama.com/download
+
+ollama serve         # Terminal 1
+ollama pull neural-chat  # Terminal 2
 
 # 3. Build & run
 ./mvnw clean package
 ./mvnw spring-boot:run
 
 # 4. Open browser
+open http://localhost:8080
+```
+
+#### Option 2: Ollama in Docker (Recommended)
+```bash
+# 1. Start Ollama container
+docker run -d --name ollama -p 11434:11434 ollama/ollama
+
+# 2. Pull the neural-chat model
+docker exec ollama ollama pull neural-chat
+
+# 3. Set environment variables based on your OS
+# macOS/Windows (Docker Desktop):
+export OLLAMA_BASE_URL=http://host.docker.internal:11434
+# Linux:
+# export OLLAMA_BASE_URL=http://172.17.0.1:11434
+
+# 4. Set other required variables
+export MYSQL_PASSWORD=your_password
+export OPEN_AI_API_KEY=sk-your-api-key
+
+# 5. Build & run
+./mvnw clean package
+./mvnw spring-boot:run
+
+# 6. Open browser
 open http://localhost:8080
 ```
 
@@ -65,6 +98,7 @@ curl -X POST http://localhost:8080/api/chat \
 "Show products under $100"
 "List all orders from 2024"
 "What is the average product price?"
+"Show order details with product names"
 ```
 
 ### Response Format
@@ -98,6 +132,245 @@ LLMSQLService
     ↓
 Chat UI (Browser)
 ```
+
+### LLM Integration Details
+- **Library**: LangChain4j 0.32.0 (OpenAI primary + Ollama fallback)
+- **Primary Model**: GPT-4o with temperature=0.2 (low randomness for deterministic SQL)
+- **Fallback Model**: Ollama (`neural-chat` model) at configurable URL
+- **Quota Detection**: Automatically detects OpenAI quota errors and switches to Ollama
+- **Prompt Structure**: Static schema info + user question
+- **Error Handling**: Quota-aware fallback; graceful degradation with actionable error messages
+
+---
+
+## 🐳 Docker Setup Guide
+
+### Full Docker Compose Setup (All Services)
+
+Create a `docker-compose.yml` in the project root:
+
+```yaml
+version: '3.8'
+
+services:
+  # Ollama LLM Service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama
+    ports:
+      - "11434:11434"
+    environment:
+      OLLAMA_KEEP_ALIVE: 24h
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: rag-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-password}
+      MYSQL_DATABASE: rag-data-schema
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./rag-mysql-chatbot.sql:/docker-entrypoint-initdb.d/init.sql
+      - mysql_data:/var/lib/mysql
+    networks:
+      - rag-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Spring Boot Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-chatbot
+    ports:
+      - "8080:8080"
+    environment:
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-password}
+      OPEN_AI_API_KEY: ${OPEN_AI_API_KEY}
+      OLLAMA_BASE_URL: http://ollama:11434
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/rag-data-schema
+    depends_on:
+      ollama:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - rag-network
+
+networks:
+  rag-network:
+    driver: bridge
+
+volumes:
+  ollama_data:
+  mysql_data:
+```
+
+### Create Dockerfile (in project root):
+
+```dockerfile
+FROM maven:3.9-eclipse-temurin-17 AS builder
+WORKDIR /app
+COPY . .
+RUN mvn clean package -DskipTests
+
+FROM eclipse-temurin:17-jre-jammy
+WORKDIR /app
+COPY --from=builder /app/target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+### Run with Docker Compose:
+
+```bash
+# Set environment variables
+export MYSQL_PASSWORD=your_password
+export OPEN_AI_API_KEY=sk-your-key
+
+# Start all services
+docker-compose up --build
+
+# View logs
+docker-compose logs -f app
+
+# Stop services
+docker-compose down
+```
+
+---
+
+## ⚙️ Environment Variable Configuration
+
+### For Different Setups
+
+| Setup | OLLAMA_BASE_URL |
+|-------|-----------------|
+| Local (no Docker) | `http://localhost:11434` |
+| Docker Desktop (macOS/Windows) + Local Spring | `http://host.docker.internal:11434` |
+| Linux Docker + Local Spring | `http://172.17.0.1:11434` |
+| Docker Compose (same network) | `http://ollama:11434` |
+| Cloud (AWS/GCP) | `http://ollama-service-ip:11434` |
+
+---
+
+## 🔧 Troubleshooting
+
+### Common Issues and Solutions
+
+1. **Can't reach Ollama in Docker**
+   ```bash
+   # Test connection first
+   curl http://host.docker.internal:11434/api/tags  # macOS/Windows
+   curl http://172.17.0.1:11434/api/tags           # Linux
+   ```
+
+2. **OpenAI quota exceeded**
+   ```
+   ⚠️ OpenAI quota exceeded. Attempting fallback to Ollama...
+   ```
+   This is normal behavior - the system automatically falls back to Ollama.
+
+3. **Database connection issues**
+   ```bash
+   # Verify MySQL is running
+   mysql -u root -p -e "SHOW DATABASES;"
+   
+   # Check if schema exists
+   mysql -u root -p -e "USE rag-data-schema; SHOW TABLES;"
+   ```
+
+4. **Verify Ollama models**
+   ```bash
+   # Local Ollama
+   ollama list
+   
+   # Docker Ollama
+   docker exec ollama ollama list
+   ```
+
+---
+
+## 📁 Project Structure
+
+```
+src/
+├── main/
+│   ├── java/com/rag/mysql/rag_mysql_chatbot/
+│   │   ├── RagMysqlChatbotApplication.java
+│   │   ├── controller/ChatController.java
+│   │   └── service/LLMSQLService.java
+│   └── resources/
+│       ├── application.yml
+│       ├── static/index.html
+│       └── templates/
+├── test/
+│   └── java/com/rag/mysql/rag_mysql_chatbot/
+│       └── RagMysqlChatbotApplicationTests.java
+├── rag-mysql-chatbot.sql  # Database schema and seed data
+└── target/                # Compiled output
+```
+
+### Database Schema
+**Database**: `rag-data-schema` (MySQL)
+- **products**: product_id (PK), product_name, description, price, stock_quantity
+- **orders**: order_id (PK), customer_name, order_date, total_amount
+- **order_items**: order_item_id (PK), order_id (FK), product_id (FK), quantity, price_at_purchase
+
+---
+
+## 🛠️ Development
+
+### Build Commands
+```bash
+# Compile
+./mvnw clean compile
+
+# Package
+./mvnw clean package
+
+# Run tests
+./mvnw test
+
+# Run Spring Boot
+./mvnw spring-boot:run
+
+# Or run JAR directly
+java -jar target/rag-mysql-chatbot-0.0.1-SNAPSHOT.jar
+```
+
+### Code Customization
+1. Modify schema context in `LLMSQLService.java` (lines 34-40)
+2. Change LLM models in `LLMSQLService.java` constructor
+3. Adjust prompt templates for better SQL generation
+4. Add new tables by updating both schema string and SQL file
+
+---
+
+## 📚 Additional Documentation
+
+For more detailed setup instructions, see:
+- `START_HERE.md` - Quick start guide
+- `YOUR_SETUP.md` - Personalized setup instructions
+- `DOCKER_SETUP.md` - Comprehensive Docker setup guide
+- `DOCKER_QUICK_FIX.md` - Quick fixes for common Docker issues
+- `QUICK_REFERENCE.md` - Command cheat sheet
+- `AGENTS.md` - Technical implementation details
 
 ### Tech Stack
 | Layer | Technology |
